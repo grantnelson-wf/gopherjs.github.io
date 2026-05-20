@@ -89,6 +89,9 @@ func hasErrors(output []any) bool {
 
 var errRegex = regexp.MustCompile(`^(\w+\.go):(\d+):`)
 
+// parseError parses Go style stack frames from the given content to
+// extract the file name and line number so that we can highlight the line
+// number in the editor for the lines indicated in the error.
 func parseError(content any, errLines map[string][]int) {
 	if contentStr, ok := content.(string); ok {
 		for _, line := range strings.Split(contentStr, "\n") {
@@ -108,7 +111,7 @@ func parseError(content any, errLines map[string][]int) {
 // outputLine creates a React element for a span of output content.
 // The index is used to create a unique ID for the line so it should
 // be the line's position in the output list.
-func outputLine(index int, classType string, content string) *react.Element {
+func outputLine(index int, classType, content string) *react.Element {
 	return react.CreateElement(outputLineComponent, react.Props{}.
 		Set(`index`, index).
 		Set(`classType`, classType).
