@@ -56,9 +56,7 @@ func outputBoxComponent(props react.Props) *react.Element {
 	children := make([]react.Node, len(output))
 	for i, item := range output {
 		itemMap := item.(map[string]any)
-		classType := itemMap[typeKey].(string)
-		content := itemMap[contentKey].(string)
-		children[i] = outputLine(i, classType, content)
+		children[i] = outputLine(i, itempMap)
 	}
 
 	return react.Div(react.Props{}.
@@ -75,6 +73,7 @@ const (
 	systemType = `system`
 	typeKey    = `type`
 	contentKey = `content`
+	styleKey   = `style`
 )
 
 // hasErrors determines if any output is an error.
@@ -111,22 +110,19 @@ func parseError(content any, errLines map[string][]int) {
 // outputLine creates a React element for a span of output content.
 // The index is used to create a unique ID for the line so it should
 // be the line's position in the output list.
-func outputLine(index int, classType, content string) *react.Element {
-	return react.CreateElement(outputLineComponent, react.Props{}.
-		Set(`index`, index).
-		Set(`classType`, classType).
-		Set(`content`, content))
-}
-
-func outputLineComponent(props react.Props) *react.Element {
+func outputLine(index int, itemMap map[string]any) *react.Element {
 	var (
-		index     = props.GetInt(`index`)
-		classType = props.GetString(`classType`)
-		content   = props.GetString(`content`)
+		classType = itemMap[typeKey].(string)
+		content   = itemMap[contentKey].(string)
+		style     = itemMap[styleKey].(string)
 	)
-	return react.Span(react.Props{}.
-		Set(`className`, classType).
-		Set(`key`, index),
+	props := react.Props{}
+	if len(style) > 0 {
+		props.Set(`style`, style)
+	}
+	return react.Span(props.
+		Set(`key`, index).
+		Set(`className`, classType),
 		content)
 }
 
@@ -145,6 +141,59 @@ func ungroupError(err error) []error {
 	}
 }
 
+var (
+	ansiColors = []string{
+		"#000", "#c00", "#0a0", "#a50", "#00c", "#c0c", "#0aa", "#ccc", // 0-7: standard
+		"#555", "#f55", "#5f5", "#ff5", "#55f", "#f5f", "#5ff", "#fff", // 8-15: bright
+	}
+	ansiRegex = regexp.MustCompile(`\x1b\[([0-9;]*)m`)
+)
+
+func parseANSI(content string) []styledSegment {
+	var segments []styledSegment
+	fg, bg := ``, ``
+	lastEnd := 0
+
+	for _, match := range ansiRegex.FindAllStringSubmatchIndex(content, -1) {
+		if match[0] > lastEnd {
+			segments = append(segments, styledSegment{
+				text:  content[lastEnd:match[0]],
+				style: makeStyle(fg, bg),
+			})
+		}
+
+		codes := content[match[2]:match[3]]
+		for _, code := range strings.Split(codes, ";") {
+			n, _ := strconv.Atoi(code)
+			switch {
+			case n == 0:
+				fg, bg = ``, ``
+			case n == 39:
+				fg = ``
+			case n == 49:
+				bg = ``
+			case n >= 30 && n <= 37:
+				fg = ansiColors[n-30]
+			case n >= 40 && n <= 47:
+				bg = ansiColors[n-40]
+			case n >= 90 && n <= 97:
+				fg = ansiColors[n-90+8]
+			case n >= 100 && n <= 107:
+				bg = ansiColors[n-100+8]
+			}
+		}
+		lastEnd = match[1]
+	}
+
+	if lastEnd < len(content) {
+		segments = append(segments, styledSegment{
+			text:  content[lastEnd:],
+			style: makeStyle(fg, bg),
+		})
+	}
+	return segments
+}
+
 func appendContent(items []any, itemTyp, content string, startNewLine bool) []any {
 	// Check for a form feed ("\x0c") to clear the output.
 	if index := strings.LastIndexByte(content, '\x0c'); index >= 0 {
@@ -152,6 +201,43 @@ func appendContent(items []any, itemTyp, content string, startNewLine bool) []an
 		content = content[index+1:]
 	}
 
+	// If not stdout then just append as is.
+	if itemTyp != stdoutType {
+		return appendContentSegment(items, itemTyp, content, nil, startNewLine)
+	}
+
+	// Parse ANSI color codes for stdout content.
+	segments := parseANSI(content)
+	for i, seg := range segments {
+		text := seg.text
+		if text == `` {
+			continue
+		}
+
+		// Try to append to the last item if type and style match.
+		if maxItem := len(items) - 1; maxItem >= 0 {
+			lastItem := items[maxItem].(map[string]any)
+			if lastItem[typeKey] == itemTyp {
+				lastStyle, _ := lastItem[styleKey].(map[string]string)
+				if stylesEqual(lastStyle, seg.style) {
+					lastItem[contentKey] = lastItem[contentKey].(string) + text
+					continue
+				}
+			}
+		}
+
+		// Append new item with different type or style.
+		newItem := map[string]any{typeKey: itemTyp, contentKey: text}
+		if seg.style != nil {
+			newItem[styleKey] = seg.style
+		}
+		items = append(items, newItem)
+	}
+
+	return items
+}
+
+func appendContentSegment(items []any, itemTyp, content string, style any, startNewLine bool) []any {
 	// Attempt to append the content to a prior item if the type matches,
 	// also prepend a new line to the content if needed and requested.
 	if maxItem := len(items) - 1; maxItem >= 0 {
@@ -162,14 +248,18 @@ func appendContent(items []any, itemTyp, content string, startNewLine bool) []an
 			content = "\n" + content
 		}
 
-		if lastItem[typeKey] == itemTyp {
+		if lastItem[typeKey] == itemTyp && lastItem[styleKey] == style {
 			lastItem[contentKey] = lastContent + content
 			return items
 		}
 	}
 
 	// Append new type of content.
-	return append(items, map[string]any{typeKey: itemTyp, contentKey: content})
+	item := map[string]any{typeKey: itemTyp, contentKey: content}
+	if style != nil {
+		item[styleKey] = style
+	}
+	return append(items, item)
 }
 
 func NoopOutput() common.Output {
