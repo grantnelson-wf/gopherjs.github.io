@@ -56,7 +56,7 @@ func outputBoxComponent(props react.Props) *react.Element {
 	children := make([]react.Node, len(output))
 	for i, item := range output {
 		itemMap := item.(map[string]any)
-		children[i] = outputLine(i, itempMap)
+		children[i] = outputLine(i, itemMap)
 	}
 
 	return react.Div(react.Props{}.
